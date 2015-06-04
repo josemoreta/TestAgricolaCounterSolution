@@ -13,6 +13,7 @@ namespace Common
         private readonly Func<bool> _canExecute;
 
         public event EventHandler CanExecuteChanged;
+        private Action action;
 
         public RelayCommand(Action execute)
             : this(execute, null)

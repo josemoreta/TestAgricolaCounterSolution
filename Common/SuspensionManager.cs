@@ -1,9 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Runtime.Serialization;
-using System.Text;
 using System.Threading.Tasks;
 using Windows.Storage;
 using Windows.Storage.Streams;
@@ -14,31 +12,83 @@ namespace Common
 {
     public sealed class SuspensionManager
     {
-        private static Dictionary<string, object> _sessionState = new Dictionary<string, object>();
-        private static List<Type> _knownTypes = new List<Type>();
+        private const string NavigationKey = "Navigation";
         private const string sessionStateFilename = "_sessionState.xml";
-
-        private static DependencyProperty FrameSessionStateKeyProperty =
-            DependencyProperty.RegisterAttached("_FrameSessionStateKey", typeof(string), typeof(SuspensionManager), null);
+        private static List<Type> _knownTypes = new List<Type>();
+        private static List<WeakReference<Frame>> _registeredFrames = new List<WeakReference<Frame>>();
+        private static Dictionary<string, object> _sessionState = new Dictionary<string, object>();
 
         private static DependencyProperty FrameSessionBaseKeyProperty =
             DependencyProperty.RegisterAttached("_FrameSessionBaseKeyParams", typeof(string), typeof(SuspensionManager), null);
 
+        private static DependencyProperty FrameSessionStateKeyProperty =
+            DependencyProperty.RegisterAttached("_FrameSessionStateKey", typeof(string), typeof(SuspensionManager), null);
+
         private static DependencyProperty FrameSessionStateProperty =
             DependencyProperty.RegisterAttached("_FrameSessionState", typeof(Dictionary<string, object>), typeof(SuspensionManager), null);
 
-        private static List<WeakReference<Frame>> _registeredFrames = new List<WeakReference<Frame>>();
-
-        private const string NavigationKey = "Navigation";
+        public static List<Type> KnownTypes
+        {
+            get { return _knownTypes; }
+        }
 
         public static Dictionary<string, object> SessionState
         {
             get { return _sessionState; }
         }
 
-        public static List<Type> KnownTypes
+        public static void RegisterFrame(Frame frame, string sessionStateKey, string sessionBaseKey = null)
         {
-            get { return _knownTypes; }
+            if (frame.GetValue(FrameSessionStateKeyProperty) != null)
+            {
+                throw new InvalidOperationException("Frames can only be registered to one session state key");
+            }
+
+            if (frame.GetValue(FrameSessionStateProperty) != null)
+            {
+                throw new InvalidOperationException("Frames must be either be registerd before accessing frame session staet, or not registered at all");
+            }
+
+            if (!string.IsNullOrEmpty(sessionBaseKey))
+            {
+                frame.SetValue(FrameSessionBaseKeyProperty, sessionBaseKey);
+                sessionStateKey = sessionStateKey + "_" + sessionStateKey;
+            }
+
+            frame.SetValue(FrameSessionStateKeyProperty, sessionStateKey);
+            _registeredFrames.Add(new WeakReference<Frame>(frame));
+
+            RestoreFrameNavigationState(frame);
+        }
+
+        public static async Task RestoreAsync(string sessionBaseKey = null)
+        {
+            _sessionState = new Dictionary<string, object>();
+
+            try
+            {
+                StorageFile file = await
+                    ApplicationData.Current.LocalFolder.GetFileAsync(sessionStateFilename);
+                using (IInputStream inStream = await file.OpenSequentialReadAsync())
+                {
+                    DataContractSerializer serializer = new DataContractSerializer(typeof(Dictionary<string, object>), _knownTypes);
+                    _sessionState = (Dictionary<string, object>)serializer.ReadObject(inStream.AsStreamForRead());
+                }
+
+                foreach (var weakFrameReference in _registeredFrames)
+                {
+                    Frame frame;
+                    if (weakFrameReference.TryGetTarget(out frame) && (string)frame.GetValue(FrameSessionBaseKeyProperty) == sessionBaseKey)
+                    {
+                        frame.ClearValue(FrameSessionStateProperty);
+                        RestoreFrameNavigationState(frame);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                throw new SuspensionManagerException(e);
+            }
         }
 
         public static async Task SaveAsync()
@@ -71,71 +121,6 @@ namespace Common
             }
         }
 
-        public static async Task RestoreAsync(string sessionBaseKey = null)
-        {
-            _sessionState = new Dictionary<string, object>();
-
-            try
-            {
-                StorageFile file = await
-                    ApplicationData.Current.LocalFolder.GetFileAsync(sessionStateFilename);
-                using (IInputStream inStream = await file.OpenSequentialReadAsync())
-                {
-                    DataContractSerializer serializer = new DataContractSerializer(typeof(Dictionary<string, object>), _knownTypes);
-                    _sessionState = (Dictionary<string, object>)serializer.ReadObject(inStream.AsStreamForRead());
-                }
-
-                foreach (var weakFrameReference in _registeredFrames)
-                {
-                    Frame frame;
-                    if (weakFrameReference.TryGetTarget(out frame) && (string)frame.GetValue(FrameSessionBaseKeyProperty) == sessionBaseKey)
-                    {
-                        frame.ClearValue(FrameSessionStateProperty);
-                        RestoreFrameNavigationState(frame);
-                    }
-                }
-            }
-            catch(Exception e)
-            {
-                throw new SuspensionManagerException(e);
-            }
-        }
-
-        public static void RegisterFrame(Frame frame, string sessionStateKey, string sessionBaseKey = null)
-        {
-            if (frame.GetValue(FrameSessionStateKeyProperty) != null)
-            {
-                throw new InvalidOperationException("Frames can only be registered to one session state key");
-            }
-
-            if (frame.GetValue(FrameSessionStateProperty) != null)
-            {
-                throw new InvalidOperationException("Frames must be either be registerd before accessing frame session staet, or not registered at all");
-            }
-
-            if (!string.IsNullOrEmpty(sessionBaseKey))
-            {
-                frame.SetValue(FrameSessionBaseKeyProperty, sessionBaseKey);
-                sessionStateKey = sessionStateKey + "_" + sessionStateKey;
-            }
-
-            frame.SetValue(FrameSessionStateKeyProperty, sessionStateKey);
-            _registeredFrames.Add(new WeakReference<Frame>(frame));
-
-            RestoreFrameNavigationState(frame);
-        }
-
-        public static void UndregisterFrame(Frame frame)
-        {
-            SessionState.Remove((string)frame.GetValue(FrameSessionStateKeyProperty));
-            _registeredFrames.RemoveAll((weakFrameRefernce) =>
-                {
-                    Frame testFrame;
-
-                    return !weakFrameRefernce.TryGetTarget(out testFrame) || testFrame == frame;
-                });
-        }
-
         public static Dictionary<string, object> SessionStateForFrame(Frame frame)
         {
             var frameState = (Dictionary<string, object>)frame.GetValue(FrameSessionStateProperty);
@@ -161,6 +146,17 @@ namespace Common
             }
 
             return frameState;
+        }
+
+        public static void UndregisterFrame(Frame frame)
+        {
+            SessionState.Remove((string)frame.GetValue(FrameSessionStateKeyProperty));
+            _registeredFrames.RemoveAll((weakFrameRefernce) =>
+                {
+                    Frame testFrame;
+
+                    return !weakFrameRefernce.TryGetTarget(out testFrame) || testFrame == frame;
+                });
         }
 
         private static void RestoreFrameNavigationState(Frame frame)

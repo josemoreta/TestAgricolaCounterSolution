@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Common;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -18,7 +19,7 @@ using Windows.UI.Xaml.Navigation;
 
 // The Blank Application template is documented at http://go.microsoft.com/fwlink/?LinkId=391641
 
-namespace App2
+namespace TestAgricolaCounterApp
 {
     /// <summary>
     /// Provides application-specific behavior to supplement the default Application class.
@@ -120,10 +121,11 @@ namespace App2
         /// </summary>
         /// <param name="sender">The source of the suspend request.</param>
         /// <param name="e">Details about the suspend request.</param>
-        private void OnSuspending(object sender, SuspendingEventArgs e)
+        private async void OnSuspending(object sender, SuspendingEventArgs e)
         {
             var deferral = e.SuspendingOperation.GetDeferral();
 
+            await SuspensionManager.SaveAsync();
             // TODO: Save application state and stop any background activity
             deferral.Complete();
         }
